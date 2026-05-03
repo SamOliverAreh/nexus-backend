@@ -23,11 +23,11 @@ except ImportError:
 
 # ─── SYNC HELPERS ────────────────────────────────────────────────────────────
 
-def _try_fetch(ticker: str, period: str, interval: str):
+def _try_fetch(ticker: str, period: str, interval: str, auto_adjust: bool = True):
     """Return DataFrame or None — never raises."""
     try:
         t    = yf.Ticker(ticker)
-        hist = t.history(period=period, interval=interval, auto_adjust=True)
+        hist = t.history(period=period, interval=interval, auto_adjust=auto_adjust)
         if hist is not None and not hist.empty and len(hist) >= 20:
             return hist
     except Exception as e:
@@ -39,7 +39,7 @@ def _sync_history(ticker: str, period: str, interval: str,
                   fallbacks: Dict[str, str] = {}) -> dict:
     """
     Fetch OHLCV history.
-    Strategy: primary ticker → shorter periods → ETF fallback → raise.
+    Strategy: primary ticker → shorter periods → ETF fallback → retry with auto_adjust=False → raise.
     """
     period_chain = {"2y": ["2y","1y","6mo","3mo"],
                     "1y": ["1y","6mo","3mo"],
@@ -48,9 +48,9 @@ def _sync_history(ticker: str, period: str, interval: str,
     hist        = None
     used_ticker = ticker
 
-    # 1. Try primary across period chain
+    # 1. Try primary across period chain with auto_adjust=True
     for p in period_chain:
-        hist = _try_fetch(ticker, p, interval)
+        hist = _try_fetch(ticker, p, interval, auto_adjust=True)
         if hist is not None:
             break
 
@@ -60,7 +60,15 @@ def _sync_history(ticker: str, period: str, interval: str,
         logger.info(f"{ticker} unavailable — trying ETF fallback {fb}")
         used_ticker = fb
         for p in period_chain:
-            hist = _try_fetch(fb, p, interval)
+            hist = _try_fetch(fb, p, interval, auto_adjust=True)
+            if hist is not None:
+                break
+
+    # 🆕 3. Retry with auto_adjust=False (fixes forex/crypto symbols like EURUSD=X)
+    if hist is None:
+        logger.info(f"{used_ticker} still empty — retrying with auto_adjust=False")
+        for p in period_chain:
+            hist = _try_fetch(used_ticker, p, interval, auto_adjust=False)
             if hist is not None:
                 break
 
